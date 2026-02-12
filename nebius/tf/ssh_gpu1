@@ -1,0 +1,21 @@
+#!/bin/bash
+# Quick SSH to GPU Node 1
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INVENTORY_FILE="$SCRIPT_DIR/ansible/inventory.yml"
+SSH_KEY="$SCRIPT_DIR/id_nebius"
+
+# Extract IP from inventory
+IP=$(grep -A 3 "gpu1:" "$INVENTORY_FILE" | grep ansible_host | sed 's/.*: //')
+
+if [ -z "$IP" ]; then
+    echo "❌ Error: Could not find gpu1 IP in inventory"
+    exit 1
+fi
+
+# SSH with proper key and no host checking
+exec ssh -i "$SSH_KEY" \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o IdentitiesOnly=yes \
+    ubuntu@"$IP" "$@"

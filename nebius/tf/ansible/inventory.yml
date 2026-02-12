@@ -2,13 +2,13 @@ all:
   children:
     gpu_nodes:
       hosts:
-        gpu_node_1:
-          ansible_host: 89.169.98.61
+        gpu1:
+          ansible_host: 89.169.123.208
           ansible_user: ubuntu
           ansible_ssh_private_key_file: ../id_nebius
           ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'
-        gpu_node_2:
-          ansible_host: 89.169.109.0
+        gpu2:
+          ansible_host: 89.169.109.165
           ansible_user: ubuntu
           ansible_ssh_private_key_file: ../id_nebius
           ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'

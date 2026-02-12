@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(terraform state show:*)",
+      "Bash(chmod:*)",
+      "Bash(terraform state list:*)"
+    ]
+  }
+}

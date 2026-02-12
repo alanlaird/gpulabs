@@ -43,3 +43,72 @@
     - name: Display GPU information
       debug:
         msg: "GPU: {{ gpu_info.stdout }}"
+
+    # Cluster networking configuration
+    - name: Build /etc/hosts file with all cluster members
+      blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - GPU Cluster"
+        block: |
+          {% for host in groups['gpu_nodes'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ host }}
+          {% endfor %}
+
+    # SSH configuration for cluster communication
+    - name: Create .ssh directory for ubuntu user
+      file:
+        path: /home/ubuntu/.ssh
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0700'
+
+    - name: Copy cluster SSH private key
+      copy:
+        src: ../id_nebius
+        dest: /home/ubuntu/.ssh/id_nebius
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    - name: Copy cluster SSH public key
+      copy:
+        src: ../id_nebius.pub
+        dest: /home/ubuntu/.ssh/id_nebius.pub
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: Create SSH config for cluster members
+      blockinfile:
+        path: /home/ubuntu/.ssh/config
+        create: yes
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Cluster SSH Config"
+        block: |
+          Host {{ item }}
+            HostName {{ item }}
+            User ubuntu
+            IdentityFile ~/.ssh/id_nebius
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+      loop: "{{ groups['gpu_nodes'] }}"
+
+    - name: Add cluster key to authorized_keys
+      authorized_key:
+        user: ubuntu
+        key: "{{ lookup('file', '../id_nebius.pub') }}"
+        state: present
+
+    - name: Customize shell prompt with node name
+      lineinfile:
+        path: /home/ubuntu/.bashrc
+        line: 'export PS1="\[\033[01;32m\]{{ inventory_hostname }}\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ "'
+        regexp: '^export PS1='
+        state: present
+        create: yes
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'

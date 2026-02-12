@@ -48,28 +48,35 @@ output "gpu_node_2" {
 output "connection_info" {
   description = "How to connect to your GPU instances"
   value = <<-EOT
-  
+
   ╔════════════════════════════════════════════════════════════════╗
   ║                   🚀 GPU INSTANCES READY! 🚀                    ║
   ╚════════════════════════════════════════════════════════════════╝
-  
+
   📦 Image: ${local.os_version}
   🔧 CUDA: ${local.cuda_version}
   🌐 Network: ${local.subnet_name} (${local.subnet_cidr})
-  
+
+  🤖 ANSIBLE: Automatic configuration has been applied!
+     • /etc/hosts with cluster member short names
+     • SSH keys for passwordless cluster communication
+     • Custom shell prompts showing node names
+
   🔌 CONNECT:
   ─────────────────────────────────────────────────────────────────
   Node 1: ssh ${var.ssh_user}@${try(nebius_compute_v1_instance.gpu_node_1.status.network_interfaces[0].public_ip_address.address, "PENDING")}
   Node 2: ssh ${var.ssh_user}@${try(nebius_compute_v1_instance.gpu_node_2.status.network_interfaces[0].public_ip_address.address, "PENDING")}
-  
+
+  From any node, SSH to others: ssh gpu1 or ssh gpu2
+
   ⚡ VERIFY GPU:
   ─────────────────────────────────────────────────────────────────
   nvidia-smi              # Check GPU status
   nvcc --version          # Check CUDA version
-  
+
   💰 COST: $3.10/hour ($74.40/day)
   🗑️  DESTROY: terraform destroy
-  
+
   EOT
 }
 

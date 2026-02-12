@@ -197,7 +197,7 @@ resource "nebius_compute_v1_instance" "gpu_node_2" {
       sudo: ['ALL=(ALL) NOPASSWD:ALL']
       ssh_authorized_keys:
         - ${var.ssh_public_key}
-  
+
   write_files:
     - path: /etc/motd
       content: |
@@ -208,9 +208,35 @@ resource "nebius_compute_v1_instance" "gpu_node_2" {
         CUDA: ${local.cuda_version}
         Platform: ${var.gpu_platform}
         Preset: ${var.gpu_preset}
-        
+
         Check GPU: nvidia-smi
         Check CUDA: nvcc --version
         ================================================
   EOT
+}
+
+# Wait for nodes to be ready and run Ansible configuration
+resource "null_resource" "ansible_provisioner" {
+  # This resource will be recreated when either instance is recreated
+  triggers = {
+    instance_1_id = nebius_compute_v1_instance.gpu_node_1.id
+    instance_2_id = nebius_compute_v1_instance.gpu_node_2.id
+    # Also trigger on IP changes
+    instance_1_ip = split("/", nebius_compute_v1_instance.gpu_node_1.status.network_interfaces[0].public_ip_address.address)[0]
+    instance_2_ip = split("/", nebius_compute_v1_instance.gpu_node_2.status.network_interfaces[0].public_ip_address.address)[0]
+  }
+
+  # Wait for instances to be created and get their IPs
+  depends_on = [
+    nebius_compute_v1_instance.gpu_node_1,
+    nebius_compute_v1_instance.gpu_node_2
+  ]
+
+  provisioner "local-exec" {
+    command = "${path.module}/scripts/update-inventory-and-run-ansible.sh '${split("/", nebius_compute_v1_instance.gpu_node_1.status.network_interfaces[0].public_ip_address.address)[0]}' '${split("/", nebius_compute_v1_instance.gpu_node_2.status.network_interfaces[0].public_ip_address.address)[0]}' '${var.ssh_user}' '${path.module}/id_nebius'"
+
+    environment = {
+      ANSIBLE_HOST_KEY_CHECKING = "False"
+    }
+  }
 }
