@@ -1,0 +1,45 @@
+---
+- name: Configure GPU Nodes
+  hosts: gpu_nodes
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install nyancat
+      apt:
+        name: nyancat
+        state: present
+
+    - name: Install other useful packages
+      apt:
+        name:
+          - htop
+          - tmux
+          - vim
+          - git
+          - curl
+          - wget
+        state: present
+
+    - name: Test nyancat installation
+      command: which nyancat
+      register: nyancat_path
+      changed_when: false
+
+    - name: Display nyancat path
+      debug:
+        msg: "Nyancat installed at: {{ nyancat_path.stdout }}"
+
+    - name: Get GPU information
+      command: nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+      register: gpu_info
+      changed_when: false
+
+    - name: Display GPU information
+      debug:
+        msg: "GPU: {{ gpu_info.stdout }}"
