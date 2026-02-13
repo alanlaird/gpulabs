@@ -5,19 +5,10 @@
   gather_facts: yes
 
   tasks:
-    - name: Update apt cache
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
-
-    - name: Install nyancat
-      apt:
-        name: nyancat
-        state: present
-
-    - name: Install other useful packages
+    - name: Install useful packages
       apt:
         name:
+          - jq
           - htop
           - tmux
           - vim
@@ -25,15 +16,8 @@
           - curl
           - wget
         state: present
-
-    - name: Test nyancat installation
-      command: which nyancat
-      register: nyancat_path
-      changed_when: false
-
-    - name: Display nyancat path
-      debug:
-        msg: "Nyancat installed at: {{ nyancat_path.stdout }}"
+        update_cache: yes
+        cache_valid_time: 3600
 
     - name: Get GPU information
       command: nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
@@ -112,3 +96,134 @@
         owner: ubuntu
         group: ubuntu
         mode: '0644'
+
+    # # NCCL testing setup
+    # - name: Install build dependencies for OpenMPI
+    #   apt:
+    #     name:
+    #       - build-essential
+    #       - wget
+    #       - libssl-dev
+    #       - zlib1g-dev
+    #     state: present
+    #     update_cache: yes
+
+    # - name: Check if MPI is already installed
+    #   shell: which mpirun || echo "none"
+    #   register: mpi_precheck
+    #   changed_when: false
+
+    # - name: Download OpenMPI source
+    #   get_url:
+    #     url: https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.6.tar.gz
+    #     dest: /tmp/openmpi-4.1.6.tar.gz
+    #   when: mpi_precheck.stdout == "none"
+
+    # - name: Extract OpenMPI source
+    #   unarchive:
+    #     src: /tmp/openmpi-4.1.6.tar.gz
+    #     dest: /tmp/
+    #     remote_src: yes
+    #     creates: /tmp/openmpi-4.1.6
+    #   when: mpi_precheck.stdout == "none"
+
+    # - name: Build and install OpenMPI from source
+    #   shell: |
+    #     cd /tmp/openmpi-4.1.6
+    #     ./configure --prefix=/usr/local --with-cuda=/usr/local/cuda
+    #     make -j$(nproc)
+    #     make install
+    #     ldconfig
+    #   args:
+    #     creates: /usr/local/bin/mpirun
+    #   when: mpi_precheck.stdout == "none"
+
+    # - name: Check if MPI is now available
+    #   shell: which mpirun || echo "none"
+    #   register: mpi_check
+    #   changed_when: false
+
+    - name: Check for NCCL in CUDA installation
+      stat:
+        path: /usr/local/cuda/lib64/libnccl.so
+      register: nccl_cuda_check
+
+    - name: Find NCCL location
+      shell: |
+        if [ -f /usr/local/cuda/lib64/libnccl.so ]; then
+          echo "/usr/local/cuda"
+        elif [ -f /usr/lib/x86_64-linux-gnu/libnccl.so ]; then
+          echo "/usr"
+        else
+          # Try to find it anywhere
+          find /usr -name "libnccl.so*" 2>/dev/null | head -1 | xargs dirname | xargs dirname || echo "/usr/local/cuda"
+        fi
+      register: nccl_home
+      changed_when: false
+
+    - name: Display NCCL location
+      debug:
+        msg: "NCCL found at: {{ nccl_home.stdout }}"
+
+    - name: Clone NCCL tests repository
+      git:
+        repo: 'https://github.com/NVIDIA/nccl-tests.git'
+        dest: /home/ubuntu/nccl-tests
+        version: master
+      become_user: ubuntu
+
+    - name: Clean previous NCCL test builds
+      shell: cd /home/ubuntu/nccl-tests && make clean
+      args:
+        removes: /home/ubuntu/nccl-tests/build
+      become_user: ubuntu
+      ignore_errors: yes
+
+    # - name: Build NCCL tests with MPI
+    #   shell: |
+    #     cd /home/ubuntu/nccl-tests
+    #     make MPI=1 CUDA_HOME=/usr/local/cuda NCCL_HOME={{ nccl_home.stdout }} MPI_HOME=/usr/local
+    #   become_user: ubuntu
+    #   environment:
+    #     PATH: "/usr/local/cuda/bin:/usr/local/bin:{{ ansible_env.PATH }}"
+    #     LD_LIBRARY_PATH: "/usr/local/cuda/lib64:{{ nccl_home.stdout }}/lib64:/usr/local/lib:/usr/local/cuda/lib"
+    #   when: mpi_check.stdout != "none"
+
+    - name: Create NCCL test wrapper script
+      copy:
+        dest: /home/ubuntu/run_nccl_test.sh
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # NCCL multi-node test wrapper
+
+          REMOTE_HOST="${1:-gpu2}"
+          TEST="${2:-all_reduce_perf}"
+
+          # Set library paths
+          export PATH="/usr/local/bin:/usr/local/cuda/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/cuda/lib64:{{ nccl_home.stdout }}/lib64:$LD_LIBRARY_PATH"
+
+          cd /home/ubuntu/nccl-tests
+
+          echo "════════════════════════════════════════════════════════════"
+          echo "  NCCL Multi-Node Test"
+          echo "════════════════════════════════════════════════════════════"
+          echo "  Local:  $(hostname)"
+          echo "  Remote: $REMOTE_HOST"
+          echo "  Test:   $TEST"
+          echo "  MPI:    $(which mpirun)"
+          echo "════════════════════════════════════════════════════════════"
+          echo ""
+
+          mpirun --allow-run-as-root \
+            -np 2 \
+            -H localhost:1,$REMOTE_HOST:1 \
+            -x PATH \
+            -x LD_LIBRARY_PATH \
+            -x NCCL_DEBUG=INFO \
+            -x NCCL_SOCKET_IFNAME=eth0 \
+            --mca btl_tcp_if_include eth0 \
+            ./build/${TEST} -b 8 -e 256M -f 2 -g 1

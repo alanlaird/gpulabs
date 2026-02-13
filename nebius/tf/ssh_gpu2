@@ -5,11 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INVENTORY_FILE="$SCRIPT_DIR/ansible/inventory.yml"
 SSH_KEY="$SCRIPT_DIR/id_nebius"
 
-# Extract IP from inventory
-IP=$(grep -A 3 "gpu2:" "$INVENTORY_FILE" | grep ansible_host | sed 's/.*: //')
+# Extract IP from inventory (try both gpu2 and gpu_node_2)
+IP=$(grep -A 3 "gpu_node_2:" "$INVENTORY_FILE" | grep ansible_host | sed 's/.*: //')
+if [ -z "$IP" ]; then
+    IP=$(grep -A 3 "gpu2:" "$INVENTORY_FILE" | grep ansible_host | sed 's/.*: //')
+fi
 
 if [ -z "$IP" ]; then
-    echo "❌ Error: Could not find gpu2 IP in inventory"
+    echo "❌ Error: Could not find gpu2/gpu_node_2 IP in inventory"
     exit 1
 fi
 

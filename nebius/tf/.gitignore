@@ -1,0 +1,17 @@
+# NCCL test results
+nccl_test_*.log
+reports/
+
+# Terraform files
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan
+
+# SSH keys
+id_nebius
+id_nebius.pub
+
+# Ansible
+*.retry

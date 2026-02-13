@@ -3,7 +3,8 @@
     "allow": [
       "Bash(terraform state show:*)",
       "Bash(chmod:*)",
-      "Bash(terraform state list:*)"
+      "Bash(terraform state list:*)",
+      "Bash(ansible-playbook:*)"
     ]
   }
 }
