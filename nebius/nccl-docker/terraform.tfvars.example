@@ -1,0 +1,20 @@
+# ============================================================================
+# Nebius Docker NCCL Test Nodes — Example Configuration
+# ============================================================================
+# Copy this file to terraform.tfvars and fill in your values.
+# ============================================================================
+
+# Your Nebius project ID
+# Get with: nebius iam project list --parent-id $(nebius iam tenant list --format json | jq -r '.items[0].metadata.id')
+parent_id = "project-XXXXXXXXXXXXXXXXXX"
+
+# Your SSH public key
+# Get with: cat ~/.ssh/id_ed25519.pub
+ssh_public_key = "ssh-ed25519 AAAA... your-email@example.com"
+
+# Optional: GPU platform (default = cheapest L40S)
+# gpu_platform = "gpu-l40s-a"       # ~$1.55/hr
+# gpu_platform = "gpu-h100-sxm"     # ~$2.30/hr
+
+# Optional: GPU preset
+# gpu_preset = "1gpu-8vcpu-32gb"    # minimal (default)

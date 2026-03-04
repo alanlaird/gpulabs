@@ -1,0 +1,353 @@
+---
+# docker-setup.yml — Install Docker + NVIDIA Container Toolkit, pull NCCL test image,
+# extract test binaries for inter-node MPI testing, configure cluster SSH.
+#
+# The Nebius GPU image has OpenMPI pre-installed at /usr/mpi/gcc/openmpi-4.1.9a1.
+# We use Docker to obtain the nccl-tests binaries, then run inter-node tests
+# using the pre-installed MPI.
+
+- name: Docker NCCL Node Setup
+  hosts: gpu_nodes
+  become: yes
+  gather_facts: yes
+
+  vars:
+    mpi_home: /usr/mpi/gcc/openmpi-4.1.9a1
+    nccl_image: ghcr.io/coreweave/nccl-tests:13.0.2-devel-ubuntu24.04-nccl2.29.2-1-d73ec07
+    nccl_bin_dir: /home/ubuntu/nccl-tests-bin
+
+  handlers:
+    - name: Restart Docker
+      systemd:
+        name: docker
+        state: restarted
+
+  tasks:
+
+    # ── System packages ───────────────────────────────────────────────────────
+
+    - name: Install prerequisites
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - jq
+          - tmux
+          - htop
+        state: present
+        update_cache: yes
+        cache_valid_time: 3600
+
+    # ── Docker installation ───────────────────────────────────────────────────
+
+    - name: Create Docker keyring directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Docker GPG key
+      shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+          | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+
+    - name: Add Docker APT repository
+      shell: |
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+          https://download.docker.com/linux/ubuntu \
+          $(lsb_release -cs) stable" \
+          > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker Engine
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ubuntu user to docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    # ── NVIDIA Container Toolkit ──────────────────────────────────────────────
+
+    - name: Add NVIDIA Container Toolkit GPG key
+      shell: |
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+          | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+    - name: Add NVIDIA Container Toolkit repository
+      shell: |
+        curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+          | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+          > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      args:
+        creates: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+    - name: Install NVIDIA Container Toolkit
+      apt:
+        name: nvidia-container-toolkit
+        state: present
+        update_cache: yes
+
+    - name: Check if NVIDIA runtime already configured in Docker
+      command: grep -q '"nvidia"' /etc/docker/daemon.json
+      register: nvidia_check
+      failed_when: false
+      changed_when: false
+
+    - name: Configure Docker to use NVIDIA runtime
+      command: nvidia-ctk runtime configure --runtime=docker
+      when: nvidia_check.rc != 0
+      notify: Restart Docker
+
+    # ── Pull NCCL test image ──────────────────────────────────────────────────
+
+    - name: Pull NCCL tests Docker image
+      community.docker.docker_image:
+        name: "{{ nccl_image }}"
+        source: pull
+        force_source: no
+      # Fall back to shell if collection not available
+      ignore_errors: yes
+      register: docker_pull_module
+
+    - name: Pull NCCL tests Docker image (shell fallback)
+      shell: docker pull {{ nccl_image }}
+      when: docker_pull_module is failed
+
+    # ── Extract nccl-tests binaries for inter-node MPI use ───────────────────
+    # We copy the binaries from the Docker image to the host so that mpirun
+    # can launch them across both nodes without needing Docker on the remote side.
+
+    - name: Create nccl-tests-bin directory
+      file:
+        path: "{{ nccl_bin_dir }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Extract nccl-tests binaries from Docker image
+      shell: |
+        set -e
+        # docker cp works on non-running containers (docker create, not docker run).
+        # docker exec requires a *running* container, so we never use it here.
+        CID=$(docker create {{ nccl_image }})
+        trap "docker rm -f $CID >/dev/null 2>&1" EXIT
+
+        # Try known paths via docker cp (fast, no exec needed)
+        for SRC in /opt/nccl-tests/build /usr/local/bin /workspace/build; do
+          if docker cp "$CID:$SRC/all_reduce_perf" /tmp/nccl_probe 2>/dev/null; then
+            rm -f /tmp/nccl_probe
+            docker cp "$CID:$SRC/." {{ nccl_bin_dir }}/
+            echo "Copied from $SRC"
+            exit 0
+          fi
+        done
+
+        # Fallback: find via docker run (requires image to have find)
+        BIN=$(docker run --rm --entrypoint find {{ nccl_image }} / -name "all_reduce_perf" -type f 2>/dev/null | head -1)
+        if [ -n "$BIN" ]; then
+          BINDIR=$(dirname "$BIN")
+          CID2=$(docker create {{ nccl_image }})
+          docker cp "$CID2:$BINDIR/." {{ nccl_bin_dir }}/ || true
+          docker rm -f "$CID2" >/dev/null 2>&1 || true
+          echo "Copied from $BINDIR (fallback)"
+        else
+          echo "ERROR: could not find all_reduce_perf in image" >&2
+          exit 1
+        fi
+      register: extract_result
+      changed_when: true
+
+    - name: Show extraction result
+      debug:
+        msg: "{{ extract_result.stdout }}"
+
+    - name: Set ownership on extracted binaries
+      file:
+        path: "{{ nccl_bin_dir }}"
+        owner: ubuntu
+        group: ubuntu
+        recurse: yes
+
+    - name: Make binaries executable
+      shell: chmod +x {{ nccl_bin_dir }}/*_perf 2>/dev/null || true
+
+    # ── Cluster /etc/hosts ────────────────────────────────────────────────────
+
+    - name: Add cluster members to /etc/hosts
+      blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE MANAGED — GPU Cluster"
+        block: |
+          {% for host in groups['gpu_nodes'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ host }}
+          {% endfor %}
+
+    # ── Inter-node SSH ────────────────────────────────────────────────────────
+
+    - name: Ensure .ssh directory exists
+      file:
+        path: /home/ubuntu/.ssh
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0700'
+
+    - name: Deploy cluster private key
+      copy:
+        src: ../id_nccl_docker
+        dest: /home/ubuntu/.ssh/id_nccl_docker
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    - name: Deploy cluster public key
+      copy:
+        src: ../id_nccl_docker.pub
+        dest: /home/ubuntu/.ssh/id_nccl_docker.pub
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: Authorize cluster key for ubuntu
+      authorized_key:
+        user: ubuntu
+        key: "{{ lookup('file', '../id_nccl_docker.pub') }}"
+        state: present
+
+    - name: Write SSH config for cluster members
+      blockinfile:
+        path: /home/ubuntu/.ssh/config
+        create: yes
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+        marker: "# {mark} ANSIBLE MANAGED — Cluster SSH"
+        block: |
+          {% for host in groups['gpu_nodes'] %}
+          Host {{ host }}
+            HostName {{ host }}
+            User ubuntu
+            IdentityFile ~/.ssh/id_nccl_docker
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          {% endfor %}
+
+    # ── Deploy run wrapper on each node ──────────────────────────────────────
+
+    - name: Deploy docker test wrapper script
+      copy:
+        dest: /home/ubuntu/run_docker_nccl_test.sh
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # run_docker_nccl_test.sh — Run NCCL tests via Docker + MPI
+          # Usage: run_docker_nccl_test.sh <node2_ip> [min_size] [max_size]
+          set -e
+
+          REMOTE_IP="${1:?Usage: run_docker_nccl_test.sh <node2_ip> [min_size] [max_size]}"
+          MIN_SIZE="${2:-8}"
+          MAX_SIZE="${3:-128M}"
+
+          MPI_HOME={{ mpi_home }}
+          export PATH="${MPI_HOME}/bin:/usr/local/cuda/bin:/usr/local/bin:$PATH"
+          export LD_LIBRARY_PATH="${MPI_HOME}/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+
+          LOCAL_IP=$(hostname -I | awk '{print $1}')
+          BIN="{{ nccl_bin_dir }}/all_reduce_perf"
+          NRANKS="${4:-2}"
+
+          # Auto-detect InfiniBand
+          if ls /sys/class/infiniband/ 2>/dev/null | grep -q .; then
+            TRANSPORT="InfiniBand"
+            MPI_TRANSPORT_ARGS=""
+            NCCL_TRANSPORT_VARS="-x NCCL_IB_DISABLE=0"
+          else
+            TRANSPORT="TCP"
+            MPI_TRANSPORT_ARGS="--mca btl_tcp_if_include eth0"
+            NCCL_TRANSPORT_VARS="-x NCCL_SOCKET_IFNAME=eth0"
+          fi
+
+          echo "════════════════════════════════════════════════════════════"
+          echo "  NCCL Inter-Node Benchmark (Docker binaries + host MPI)"
+          echo "════════════════════════════════════════════════════════════"
+          echo "  Node 1 (local):  $(hostname) ($LOCAL_IP)"
+          echo "  Node 2 (remote): $REMOTE_IP"
+          echo "  Transport:       $TRANSPORT"
+          echo "  Ranks:           $NRANKS"
+          echo "  Sizes: $MIN_SIZE .. $MAX_SIZE"
+          echo "  Binary: $BIN"
+          echo "════════════════════════════════════════════════════════════"
+          echo ""
+
+          "${MPI_HOME}/bin/mpirun" \
+            --allow-run-as-root \
+            -np "$NRANKS" \
+            -H "localhost:$((NRANKS/2)),${REMOTE_IP}:$((NRANKS/2))" \
+            -x PATH \
+            -x LD_LIBRARY_PATH \
+            -x NCCL_DEBUG=WARN \
+            $NCCL_TRANSPORT_VARS \
+            $MPI_TRANSPORT_ARGS \
+            --mca plm_rsh_args "-i /home/ubuntu/.ssh/id_nccl_docker -o StrictHostKeyChecking=no" \
+            "$BIN" \
+            -b "$MIN_SIZE" \
+            -e "$MAX_SIZE" \
+            -f 2 \
+            -g $((NRANKS/2))
+
+    # ── Shell environment ─────────────────────────────────────────────────────
+
+    - name: Set shell prompt to show node name
+      lineinfile:
+        path: /home/ubuntu/.bashrc
+        regexp: '^export PS1='
+        line: 'export PS1="\[\033[01;33m\][{{ inventory_hostname }}]\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ "'
+        state: present
+        create: yes
+
+    - name: Add nccl-tests-bin to PATH in bashrc
+      lineinfile:
+        path: /home/ubuntu/.bashrc
+        regexp: '^export PATH=.*nccl-tests-bin'
+        line: 'export PATH="{{ nccl_bin_dir }}:/usr/mpi/gcc/openmpi-4.1.9a1/bin:$PATH"'
+        state: present
+
+    # ── Verify GPU + Docker works ─────────────────────────────────────────────
+
+    - name: Verify nvidia-smi works
+      command: nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+      register: gpu_info
+      changed_when: false
+      become_user: ubuntu
+
+    - name: Show GPU info
+      debug:
+        msg: "GPU: {{ gpu_info.stdout }}"

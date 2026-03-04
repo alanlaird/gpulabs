@@ -1,0 +1,6 @@
+id_basic
+id_basic.pub
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup

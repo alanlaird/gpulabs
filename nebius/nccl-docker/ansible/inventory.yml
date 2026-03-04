@@ -1,0 +1,16 @@
+all:
+  children:
+    gpu_nodes:
+      hosts:
+        gpu1:
+          ansible_host: 89.169.123.3
+          ansible_user: ubuntu
+          ansible_ssh_private_key_file: ../id_nccl_docker
+          ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'
+        gpu2:
+          ansible_host: 89.169.123.146
+          ansible_user: ubuntu
+          ansible_ssh_private_key_file: ../id_nccl_docker
+          ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
