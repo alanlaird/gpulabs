@@ -50,3 +50,7 @@ Thumbs.db
 
 .terraform*
 terraform.tfstat*
+
+# SSH keys
+id_*
+*.pem
